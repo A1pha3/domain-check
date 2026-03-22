@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.0.2] - 2026-03-22
+
+### RDAP 404 False Positive Fix (Issue #30)
+
+This patch fixes a critical accuracy bug where RDAP 404 responses were unconditionally treated as "domain available," causing false positives for TLDs like `.moe` where the registry returns 404 for registered domains without NS delegation.
+
+### Fixed
+- **RDAP 404 no longer treated as definitive "available"** — 404 is now treated as inconclusive per RFC 7480 §5.3, and WHOIS is consulted for verification before concluding availability
+- **Both-protocols-failed logic tightened** — changed from OR to AND: both RDAP and WHOIS must independently indicate availability before reporting AVAILABLE. RDAP 404 alone (without WHOIS corroboration) now reports UNKNOWN instead of a false AVAILABLE
+- **WHOIS rate-limit detection expanded** — added "queries exceeded" and "number of allowed queries" patterns to catch rate-limit responses from registries like `.moe` (GoDaddy Registry)
+- **WHOIS short-response heuristic hardened** — responses under 50 characters containing error-like words ("exceeded", "error", "denied", "refused") are no longer misclassified as "available"
+- **`--no-whois` graceful degradation** — when WHOIS fallback is disabled, RDAP 404 returns AVAILABLE with a warning message instead of a raw error
+
+### Changed
+- RDAP 404 Display message updated from "Domain appears to be available" to "RDAP returned no data, verifying via WHOIS" to reflect the new inconclusive semantics
+
+### Known Limitation
+- Protocol-level debug messages (RDAP URLs, HTTP status codes, WHOIS fallback steps) are only visible via `DOMAIN_CHECK_DEBUG_RDAP=1` environment variable, not via the `--debug` CLI flag. Unifying these is planned for a future release.
+
+---
+
 ## [1.0.1] - 2026-03-01
 
 ### Fixed

@@ -213,7 +213,7 @@ impl fmt::Display for DomainCheckError {
             }
             Self::RdapError { domain, message, status_code } => {
                 match status_code {
-                    Some(404) => write!(f, "✅ {}: Domain appears to be available", domain),
+                    Some(404) => write!(f, "🔍 {}: RDAP returned no data, verifying via WHOIS", domain),
                     Some(429) => write!(f, "⏳ {}: Registry is rate limiting requests\n   💡 Please wait a moment and try again", domain),
                     Some(500..=599) => write!(f, "⚠️ {}: Registry server is temporarily unavailable\n   💡 Trying backup method...", domain),
                     Some(code) => write!(f, "⚠️ {}: Registry returned error (HTTP {})\n   💡 This domain registry may be temporarily unavailable", domain, code),
@@ -648,7 +648,8 @@ mod tests {
         let err = DomainCheckError::rdap_with_status("avail.com", "not found", 404);
         let msg = format!("{}", err);
         assert!(msg.contains("avail.com"));
-        assert!(msg.contains("available"));
+        assert!(msg.contains("RDAP returned no data"));
+        assert!(msg.contains("WHOIS"));
     }
 
     #[test]

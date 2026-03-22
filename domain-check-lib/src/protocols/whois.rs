@@ -284,8 +284,16 @@ impl WhoisClient {
             return Ok(false);
         }
 
-        // If the output is very short, it might indicate availability
-        if output_lower.trim().len() < 50 {
+        // If the output is very short and doesn't look like an error,
+        // it might indicate availability. But skip this heuristic if the
+        // response contains error-like words (e.g. rate limit messages).
+        let trimmed = output_lower.trim();
+        if trimmed.len() < 50
+            && !trimmed.contains("exceeded")
+            && !trimmed.contains("error")
+            && !trimmed.contains("denied")
+            && !trimmed.contains("refused")
+        {
             return Ok(true);
         }
 
@@ -306,6 +314,8 @@ impl WhoisClient {
             "try again later",
             "quota exceeded",
             "limit exceeded",
+            "queries exceeded",
+            "number of allowed queries",
             "throttled",
             "blocked",
             "rate-limited",

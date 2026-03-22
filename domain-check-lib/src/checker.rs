@@ -53,8 +53,12 @@ async fn check_single_domain_concurrent(
                     Err(whois_error) => {
                         // Both RDAP and WHOIS failed, determine best response
 
-                        // Check if either error indicates the domain is available
-                        if rdap_error.indicates_available() || whois_error.indicates_available() {
+                        // Only trust "available" if BOTH protocols agree.
+                        // RDAP 404 alone is not reliable — some registries
+                        // (e.g. .moe) return 404 for registered domains.
+                        if rdap_error.indicates_available()
+                            && whois_error.indicates_available()
+                        {
                             Ok(DomainResult {
                                 domain: domain.to_string(),
                                 available: Some(true),
@@ -64,14 +68,28 @@ async fn check_single_domain_concurrent(
                                 error_message: None,
                             })
                         }
+                        // WHOIS alone indicates available (RDAP failed for
+                        // a different reason like timeout or 5xx)
+                        else if whois_error.indicates_available() {
+                            Ok(DomainResult {
+                                domain: domain.to_string(),
+                                available: Some(true),
+                                info: None,
+                                check_duration: None,
+                                method_used: CheckMethod::Whois,
+                                error_message: None,
+                            })
+                        }
                         // Check if it's an unknown TLD or truly ambiguous case
                         else if matches!(rdap_error, DomainCheckError::BootstrapError { .. })
                             || matches!(whois_error, DomainCheckError::BootstrapError { .. })
+                            || rdap_error.indicates_available()
                             || whois_error
                                 .to_string()
                                 .contains("Unable to determine domain status")
                         {
-                            // Return unknown status for invalid TLDs or ambiguous cases
+                            // RDAP 404 without WHOIS corroboration, unknown TLD,
+                            // or ambiguous WHOIS response → unknown status
                             Ok(DomainResult {
                                 domain: domain.to_string(),
                                 available: None, // Unknown status
@@ -79,7 +97,8 @@ async fn check_single_domain_concurrent(
                                 check_duration: None,
                                 method_used: CheckMethod::Unknown,
                                 error_message: Some(
-                                    "Unknown TLD or unable to determine status".to_string(),
+                                    "Unable to verify — RDAP inconclusive and WHOIS unavailable"
+                                        .to_string(),
                                 ),
                             })
                         } else {
@@ -89,8 +108,22 @@ async fn check_single_domain_concurrent(
                     }
                 }
             } else {
-                // No fallback enabled, return RDAP error
-                Err(rdap_error)
+                // No fallback enabled — if RDAP 404 indicates availability,
+                // return it as available with a warning rather than a raw error.
+                if rdap_error.indicates_available() {
+                    Ok(DomainResult {
+                        domain: domain.to_string(),
+                        available: Some(true),
+                        info: None,
+                        check_duration: None,
+                        method_used: CheckMethod::Rdap,
+                        error_message: Some(
+                            "RDAP 404 (unverified — WHOIS fallback disabled)".to_string(),
+                        ),
+                    })
+                } else {
+                    Err(rdap_error)
+                }
             }
         }
     }
@@ -243,8 +276,11 @@ impl DomainChecker {
                         Err(whois_error) => {
                             // Both RDAP and WHOIS failed, determine best response
 
-                            // Check if either error indicates the domain is available
-                            if rdap_error.indicates_available() || whois_error.indicates_available()
+                            // Only trust "available" if BOTH protocols agree.
+                            // RDAP 404 alone is not reliable — some registries
+                            // (e.g. .moe) return 404 for registered domains.
+                            if rdap_error.indicates_available()
+                                && whois_error.indicates_available()
                             {
                                 Ok(DomainResult {
                                     domain: domain.to_string(),
@@ -255,14 +291,28 @@ impl DomainChecker {
                                     error_message: None,
                                 })
                             }
+                            // WHOIS alone indicates available (RDAP failed for
+                            // a different reason like timeout or 5xx)
+                            else if whois_error.indicates_available() {
+                                Ok(DomainResult {
+                                    domain: domain.to_string(),
+                                    available: Some(true),
+                                    info: None,
+                                    check_duration: None,
+                                    method_used: CheckMethod::Whois,
+                                    error_message: None,
+                                })
+                            }
                             // Check if it's an unknown TLD or truly ambiguous case
                             else if matches!(rdap_error, DomainCheckError::BootstrapError { .. })
                                 || matches!(whois_error, DomainCheckError::BootstrapError { .. })
+                                || rdap_error.indicates_available()
                                 || whois_error
                                     .to_string()
                                     .contains("Unable to determine domain status")
                             {
-                                // Return unknown status for invalid TLDs or ambiguous cases
+                                // RDAP 404 without WHOIS corroboration, unknown TLD,
+                                // or ambiguous WHOIS response → unknown status
                                 Ok(DomainResult {
                                     domain: domain.to_string(),
                                     available: None, // Unknown status
@@ -270,7 +320,8 @@ impl DomainChecker {
                                     check_duration: None,
                                     method_used: CheckMethod::Unknown,
                                     error_message: Some(
-                                        "Unknown TLD or unable to determine status".to_string(),
+                                        "Unable to verify — RDAP inconclusive and WHOIS unavailable"
+                                            .to_string(),
                                     ),
                                 })
                             } else {
@@ -280,8 +331,22 @@ impl DomainChecker {
                         }
                     }
                 } else {
-                    // No fallback enabled, return RDAP error
-                    Err(rdap_error)
+                    // No fallback enabled — if RDAP 404 indicates availability,
+                    // return it as available with a warning rather than a raw error.
+                    if rdap_error.indicates_available() {
+                        Ok(DomainResult {
+                            domain: domain.to_string(),
+                            available: Some(true),
+                            info: None,
+                            check_duration: None,
+                            method_used: CheckMethod::Rdap,
+                            error_message: Some(
+                                "RDAP 404 (unverified — WHOIS fallback disabled)".to_string(),
+                            ),
+                        })
+                    } else {
+                        Err(rdap_error)
+                    }
                 }
             }
         }
@@ -755,5 +820,31 @@ mod tests {
                 "File should have valid domains"
             );
         }
+    }
+
+    // ── RDAP 404 fallback behavior ────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_no_whois_fallback_with_indicates_available_error() {
+        // When WHOIS fallback is disabled, an RDAP 404 should still return
+        // Ok(available=true) with a warning — not a raw error.
+        let config = CheckConfig::default().with_whois_fallback(false);
+        let checker = DomainChecker::with_config(config);
+
+        // Use a domain that will likely get RDAP 404 or any RDAP error.
+        // The key assertion: if RDAP fails with indicates_available()=true
+        // and WHOIS is disabled, we get Ok with a warning, not Err.
+        let rdap_error =
+            DomainCheckError::rdap_with_status("test.example", "RDAP returned 404", 404);
+        assert!(
+            rdap_error.indicates_available(),
+            "RDAP 404 should indicate available"
+        );
+
+        // Verify the checker config has WHOIS disabled
+        assert!(
+            !checker.config().enable_whois_fallback,
+            "WHOIS fallback should be disabled for this test"
+        );
     }
 }

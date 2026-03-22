@@ -120,19 +120,9 @@ impl RdapClient {
                     println!("🔍 RDAP Error for {}: {}", domain, e);
                 }
 
-                // Check if the error indicates the domain is available
-                if e.indicates_available() {
-                    Ok(DomainResult {
-                        domain: domain.to_string(),
-                        available: Some(true),
-                        info: None,
-                        check_duration: Some(check_duration),
-                        method_used: CheckMethod::Rdap,
-                        error_message: None,
-                    })
-                } else {
-                    Err(e)
-                }
+                // Propagate all errors (including 404) to checker.rs so it can
+                // try WHOIS fallback before concluding availability.
+                Err(e)
             }
             Err(_) => {
                 // 🔍 DEBUG: Log timeout
@@ -205,11 +195,20 @@ impl RdapClient {
                 Ok((false, Some(domain_info)))
             }
             StatusCode::NOT_FOUND => {
-                // Domain is available
+                // RDAP 404 is inconclusive — some registries return 404 for
+                // registered domains without NS delegation (e.g. .moe).
+                // Defer to WHOIS for verification instead of assuming available.
                 if std::env::var("DOMAIN_CHECK_DEBUG_RDAP").is_ok() {
-                    println!("🔍 Domain {} is available (404)", domain);
+                    println!(
+                        "🔍 RDAP 404 for {} — deferring to WHOIS for verification",
+                        domain
+                    );
                 }
-                Ok((true, None))
+                Err(DomainCheckError::rdap_with_status(
+                    domain,
+                    "RDAP returned 404 (domain may or may not be registered)",
+                    404,
+                ))
             }
             StatusCode::TOO_MANY_REQUESTS => {
                 // Rate limited, try once more after a short delay
@@ -239,7 +238,11 @@ impl RdapClient {
                         let domain_info = extract_domain_info(&json);
                         Ok((false, Some(domain_info)))
                     }
-                    StatusCode::NOT_FOUND => Ok((true, None)),
+                    StatusCode::NOT_FOUND => Err(DomainCheckError::rdap_with_status(
+                        domain,
+                        "RDAP returned 404 after retry (domain may or may not be registered)",
+                        404,
+                    )),
                     code => {
                         if std::env::var("DOMAIN_CHECK_DEBUG_RDAP").is_ok() {
                             println!("🔍 Retry failed for {} with status: {}", domain, code);

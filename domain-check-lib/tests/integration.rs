@@ -351,3 +351,55 @@ async fn test_batch_check_preserves_names_mixed_results() {
     assert_eq!(results[0].domain, "google.com");
     assert_eq!(results[1].domain, "testxyz.invalidtld999");
 }
+
+// ── RDAP 404 → WHOIS fallback tests (Issue #30) ────────────────────
+
+/// Verify that a domain where RDAP returns 404 (but is actually registered)
+/// gets correctly identified as TAKEN via WHOIS fallback.
+/// .moe registry returns 404 for domains without NS delegation.
+#[tokio::test]
+#[ignore] // Network-dependent
+async fn test_rdap_404_falls_through_to_whois() {
+    use domain_check_lib::{CheckConfig, DomainChecker};
+
+    let config = CheckConfig::default().with_detailed_info(true);
+    let checker = DomainChecker::with_config(config);
+
+    // read.moe is registered but .moe RDAP returns 404 for it
+    let result = checker.check_domain("read.moe").await;
+    assert!(result.is_ok(), "Should not return error: {:?}", result);
+
+    let result = result.unwrap();
+    assert_eq!(
+        result.available,
+        Some(false),
+        "read.moe is registered — WHOIS should confirm it as TAKEN"
+    );
+}
+
+/// Verify that when WHOIS fallback is disabled, an RDAP 404 still returns
+/// Ok (not a raw error) with available=true and a warning message.
+#[tokio::test]
+#[ignore] // Network-dependent
+async fn test_rdap_404_no_whois_still_works() {
+    use domain_check_lib::{CheckConfig, DomainChecker};
+
+    let config = CheckConfig::default().with_whois_fallback(false);
+    let checker = DomainChecker::with_config(config);
+
+    // read.moe gets RDAP 404 — with WHOIS disabled, should gracefully
+    // return available=true with a warning rather than a raw error
+    let result = checker.check_domain("read.moe").await;
+    assert!(
+        result.is_ok(),
+        "Should return Ok even without WHOIS fallback: {:?}",
+        result
+    );
+
+    let result = result.unwrap();
+    assert_eq!(result.available, Some(true));
+    assert!(
+        result.error_message.is_some(),
+        "Should include a warning that result is unverified"
+    );
+}
